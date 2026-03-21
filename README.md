@@ -8,13 +8,10 @@
 - 表名默认使用工作表名，如冲突自动补时间戳
 
 ## 使用前提
-- 机器上需要可用的 Microsoft Access Database Engine / ACE OLE DB 驱动
+- 机器上需要可用的 Microsoft Access Database Engine / ACE OLE DB 驱动 https://www.microsoft.com/en-us/download/details.aspx?id=54920
 - 如果目标 .mdb 文件不存在，程序会自动创建一个空白 .mdb 后再导入
 - 如果使用已有 .accdb 或 .mdb 文件，程序会直接在其中建表导入
 
-## 构建方式
-- 在当前目录运行 build.bat
-- 成功后生成 bin\XlsToAccessImporter.exe
 
 ## 使用方式
 1. 选择 Excel 文件

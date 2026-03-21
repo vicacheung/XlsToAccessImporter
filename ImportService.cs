@@ -9,21 +9,27 @@ namespace XlsToAccessImporter
     {
         private readonly SchemaInferenceService _schemaInferenceService;
         private readonly AccessService _accessService;
+        private readonly Action<ImportProgress> _progressReporter;
 
-        public ImportService(SchemaInferenceService schemaInferenceService, AccessService accessService)
+        public ImportService(SchemaInferenceService schemaInferenceService, AccessService accessService, Action<ImportProgress> progressReporter)
         {
             _schemaInferenceService = schemaInferenceService;
             _accessService = accessService;
+            _progressReporter = progressReporter ?? delegate { };
         }
 
         public ImportResult Execute(ImportOptions options)
         {
+            _progressReporter(new ImportProgress { Stage = ImportStage.Preparing, Message = "正在准备导入..." });
             string accessConnectionString = OleDbUtility.BuildAccessConnectionString(options.AccessPath);
             string finalTableName = _accessService.GetUniqueTableName(accessConnectionString, options.RequestedTableName);
+
+            _progressReporter(new ImportProgress { Stage = ImportStage.CreatingTable, Message = "正在创建目标表..." });
             _accessService.CreateTable(accessConnectionString, finalTableName, options.Columns, _schemaInferenceService, options.ForceAllText);
 
             ImportResult result = new ImportResult();
             result.FinalTableName = finalTableName;
+            int totalRows = options.SourceTable.Rows.Count;
 
             for (int rowIndex = 0; rowIndex < options.SourceTable.Rows.Count; rowIndex++)
             {
@@ -44,9 +50,38 @@ namespace XlsToAccessImporter
                     result.FailedRows++;
                     result.Messages.Add("第 " + (rowIndex + 2).ToString(CultureInfo.InvariantCulture) + " 行失败: " + ex.Message);
                 }
+
+                ReportRowProgress(rowIndex + 1, totalRows, result.InsertedRows, result.FailedRows);
             }
 
+            _progressReporter(new ImportProgress
+            {
+                Stage = ImportStage.Completed,
+                TotalRows = totalRows,
+                ProcessedRows = result.InsertedRows + result.FailedRows,
+                SuccessRows = result.InsertedRows,
+                FailedRows = result.FailedRows,
+                Message = "导入完成"
+            });
+
             return result;
+        }
+
+        private void ReportRowProgress(int processed, int total, int success, int failed)
+        {
+            if (processed % 25 != 0 && processed != total)
+            {
+                return;
+            }
+
+            _progressReporter(new ImportProgress
+            {
+                Stage = ImportStage.ImportingData,
+                ProcessedRows = processed,
+                TotalRows = total,
+                SuccessRows = success,
+                FailedRows = failed
+            });
         }
 
         private List<object> ConvertRowValues(DataRow row, IList<ColumnDefinition> columns, bool forceAllText, int excelRowNumber)

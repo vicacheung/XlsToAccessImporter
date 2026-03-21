@@ -8,19 +8,18 @@
 - 表名默认使用工作表名，如冲突自动补时间戳
 
 ## 使用前提
-- 机器上需要可用的 Microsoft Access Database Engine / ACE OLE DB 驱动 https://www.microsoft.com/en-us/download/details.aspx?id=54920
+- 机器上需要可用的 Microsoft Access Database Engine / ACE OLE DB 驱动
+  > **Microsoft.ACE.OLEDB.12.0** https://www.microsoft.com/en-us/download/details.aspx?id=13255
+  > **Microsoft.ACE.OLEDB.16.0** https://www.microsoft.com/en-us/download/details.aspx?id=54920
 - 如果目标 .mdb 文件不存在，程序会自动创建一个空白 .mdb 后再导入
 - 如果使用已有 .accdb 或 .mdb 文件，程序会直接在其中建表导入
 
 
 ## 使用方式
-1. 选择 Excel 文件
-2. 选择工作表
-3. 如果已有库，点击“打开已有”选择 `.mdb/.accdb`
-4. 如果要新建库，点击“新建 MDB”，直接在保存对话框里选目录和文件名
-5. 不手动选也可以，程序会按 Excel 同目录自动建议一个 `.mdb` 路径
-6. 确认目标表名和字段类型
-7. 点击“开始导入"
+1. 选择 Excel 文件、工作表
+2. 如果已有库，点击“打开已有”选择 ；默认在同目录新建`.mdb`，也可以点击“新建 MDB”自定义
+3. 确认目标表名和字段类型
+“开始导入"！！！
 
 ## 注意事项
 - Excel 第一行会作为字段名

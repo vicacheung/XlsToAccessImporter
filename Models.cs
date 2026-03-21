@@ -55,6 +55,28 @@ namespace XlsToAccessImporter
         }
     }
 
+    internal enum ImportStage
+    {
+        None,
+        Preparing,
+        ReadingExcel,
+        AnalyzingColumns,
+        CreatingDatabase,
+        CreatingTable,
+        ImportingData,
+        Completed
+    }
+
+    internal sealed class ImportProgress
+    {
+        public ImportStage Stage { get; set; }
+        public int ProcessedRows { get; set; }
+        public int TotalRows { get; set; }
+        public int SuccessRows { get; set; }
+        public int FailedRows { get; set; }
+        public string Message { get; set; }
+    }
+
     internal sealed class ProviderNotFoundException : Exception
     {
         public ProviderNotFoundException(string message) : base(message)

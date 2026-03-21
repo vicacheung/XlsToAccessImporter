@@ -23,6 +23,7 @@ namespace XlsToAccessImporter
         private TextBox _txtLog;
         private Button _btnImport;
         private ProgressBar _progressBar;
+        private Label _lblStatus;
         private DataTable _currentSheet;
         private List<ColumnDefinition> _columnDefinitions;
 
@@ -97,7 +98,7 @@ namespace XlsToAccessImporter
             panel.Dock = DockStyle.Top;
             panel.AutoSize = true;
             panel.ColumnCount = 7;
-            panel.RowCount = 1;
+            panel.RowCount = 2;
             panel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 70));
             panel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 250));
             panel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 80));
@@ -106,6 +107,8 @@ namespace XlsToAccessImporter
             panel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 120));
             panel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 120));
             panel.Padding = new Padding(0, 0, 0, 8);
+            panel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            panel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
 
             panel.Controls.Add(new Label { Text = "工作表", TextAlign = ContentAlignment.MiddleLeft, Dock = DockStyle.Fill }, 0, 0);
             _cmbSheets = new ComboBox { Dock = DockStyle.Fill, DropDownStyle = ComboBoxStyle.DropDownList };
@@ -126,6 +129,10 @@ namespace XlsToAccessImporter
 
             _progressBar = new ProgressBar { Dock = DockStyle.Fill, Style = ProgressBarStyle.Marquee, Visible = false };
             panel.Controls.Add(_progressBar, 6, 0);
+
+            _lblStatus = new Label { Text = "状态: 待就绪", Dock = DockStyle.Fill, AutoEllipsis = true };
+            panel.SetColumnSpan(_lblStatus, 7);
+            panel.Controls.Add(_lblStatus, 0, 1);
 
             return panel;
         }
@@ -250,6 +257,8 @@ namespace XlsToAccessImporter
         {
             try
             {
+                UpdateStatus(ImportStage.ReadingExcel, "正在读取工作表列表...");
+                ToggleBusy(true, true);
                 _cmbSheets.Items.Clear();
                 _gridPreview.DataSource = null;
                 _gridColumns.DataSource = null;
@@ -268,11 +277,17 @@ namespace XlsToAccessImporter
                 }
 
                 AppendLog("已加载工作表: " + sheets.Count);
+                UpdateStatus(ImportStage.Completed, "工作表列表读取完成");
             }
             catch (Exception ex)
             {
                 MessageBox.Show(this, ex.Message, "读取 Excel 失败", MessageBoxButtons.OK, MessageBoxIcon.Error);
                 AppendLog("读取 Excel 失败: " + ex.Message);
+                UpdateStatus(ImportStage.None, "读取 Excel 失败");
+            }
+            finally
+            {
+                ToggleBusy(false, false);
             }
         }
 
@@ -286,7 +301,10 @@ namespace XlsToAccessImporter
 
             try
             {
+                UpdateStatus(ImportStage.ReadingExcel, "正在读取工作表数据...");
+                ToggleBusy(true, true);
                 _currentSheet = _excelReader.ReadSheet(_txtExcelPath.Text.Trim(), selectedSheet.QueryName);
+                UpdateStatus(ImportStage.AnalyzingColumns, "正在分析字段类型...");
                 _gridPreview.DataSource = CreatePreviewTable(_currentSheet, 100);
                 _columnDefinitions = _schemaInferenceService.BuildColumnDefinitions(_currentSheet);
                 _gridColumns.DataSource = new BindingSource { DataSource = _columnDefinitions };
@@ -299,11 +317,17 @@ namespace XlsToAccessImporter
 
                 RefreshColumnTypeHints();
                 AppendLog("已读取工作表: " + selectedSheet.DisplayName + "，数据行数: " + _currentSheet.Rows.Count);
+                UpdateStatus(ImportStage.Completed, "工作表读取完成");
             }
             catch (Exception ex)
             {
                 MessageBox.Show(this, ex.Message, "读取工作表失败", MessageBoxButtons.OK, MessageBoxIcon.Error);
                 AppendLog("读取工作表失败: " + ex.Message);
+                UpdateStatus(ImportStage.None, "读取工作表失败");
+            }
+            finally
+            {
+                ToggleBusy(false, false);
             }
         }
 
@@ -312,9 +336,9 @@ namespace XlsToAccessImporter
             try
             {
                 ValidateBeforeImport();
-                ToggleBusy(true);
+                ToggleBusy(true, true);
+                UpdateStatus(ImportStage.Preparing, "正在准备导入...");
 
-                ImportService importService = new ImportService(_schemaInferenceService, _accessService);
                 ImportOptions options = new ImportOptions
                 {
                     ExcelPath = _txtExcelPath.Text.Trim(),
@@ -326,31 +350,57 @@ namespace XlsToAccessImporter
                     SourceTable = _currentSheet
                 };
 
-                ImportResult result = importService.Execute(options);
-                AppendLog("导入完成，最终表名: " + result.FinalTableName);
-                AppendLog("成功: " + result.InsertedRows + "，失败: " + result.FailedRows);
-                for (int i = 0; i < result.Messages.Count; i++)
+                System.Threading.ThreadPool.QueueUserWorkItem(delegate
                 {
-                    AppendLog(result.Messages[i]);
-                }
+                    ImportResult result = null;
+                    Exception error = null;
+                    try
+                    {
+                        ImportService importService = new ImportService(_schemaInferenceService, _accessService, ReportProgress);
+                        result = importService.Execute(options);
+                    }
+                    catch (Exception ex)
+                    {
+                        error = ex;
+                    }
 
-                MessageBox.Show(this,
-                    "导入完成。" + Environment.NewLine +
-                    "表名: " + result.FinalTableName + Environment.NewLine +
-                    "成功: " + result.InsertedRows + Environment.NewLine +
-                    "失败: " + result.FailedRows,
-                    "完成",
-                    MessageBoxButtons.OK,
-                    MessageBoxIcon.Information);
+                    BeginInvoke(new Action(delegate
+                    {
+                        if (error != null)
+                        {
+                            MessageBox.Show(this, error.Message, "导入失败", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                            AppendLog("导入失败: " + error.Message);
+                            UpdateStatus(ImportStage.None, "导入失败");
+                        }
+                        else if (result != null)
+                        {
+                            AppendLog("导入完成，最终表名: " + result.FinalTableName);
+                            AppendLog("成功: " + result.InsertedRows + "，失败: " + result.FailedRows);
+                            for (int i = 0; i < result.Messages.Count; i++)
+                            {
+                                AppendLog(result.Messages[i]);
+                            }
+
+                            MessageBox.Show(this,
+                                "导入完成。" + Environment.NewLine +
+                                "表名: " + result.FinalTableName + Environment.NewLine +
+                                "成功: " + result.InsertedRows + Environment.NewLine +
+                                "失败: " + result.FailedRows,
+                                "完成",
+                                MessageBoxButtons.OK,
+                                MessageBoxIcon.Information);
+                        }
+
+                        ToggleBusy(false, false);
+                    }));
+                });
             }
             catch (Exception ex)
             {
                 MessageBox.Show(this, ex.Message, "导入失败", MessageBoxButtons.OK, MessageBoxIcon.Error);
                 AppendLog("导入失败: " + ex.Message);
-            }
-            finally
-            {
-                ToggleBusy(false);
+                UpdateStatus(ImportStage.None, "导入失败");
+                ToggleBusy(false, false);
             }
         }
 
@@ -485,13 +535,42 @@ namespace XlsToAccessImporter
             _txtLog.AppendText("[" + DateTime.Now.ToString("HH:mm:ss") + "] " + message + Environment.NewLine);
         }
 
-        private void ToggleBusy(bool busy)
+        private void ToggleBusy(bool busy, bool showMarquee)
         {
             UseWaitCursor = busy;
             _btnImport.Enabled = !busy;
             _progressBar.Visible = busy;
-            _progressBar.Style = busy ? ProgressBarStyle.Marquee : ProgressBarStyle.Blocks;
-            Application.DoEvents();
+            _progressBar.Style = busy && showMarquee ? ProgressBarStyle.Marquee : ProgressBarStyle.Blocks;
+        }
+
+        private void UpdateStatus(ImportStage stage, string message)
+        {
+            string text = string.IsNullOrWhiteSpace(message) ? string.Empty : message;
+            _lblStatus.Text = "状态: " + text;
+        }
+
+        private void ReportProgress(ImportProgress progress)
+        {
+            BeginInvoke(new Action(delegate
+            {
+                switch (progress.Stage)
+                {
+                    case ImportStage.CreatingTable:
+                        UpdateStatus(progress.Stage, "正在创建目标表...");
+                        ToggleBusy(true, true);
+                        break;
+                    case ImportStage.ImportingData:
+                        ToggleBusy(true, false);
+                        UpdateStatus(progress.Stage,
+                            "正在导入数据: 已处理 " + progress.ProcessedRows + " / " + progress.TotalRows +
+                            "，成功 " + progress.SuccessRows + "，失败 " + progress.FailedRows);
+                        break;
+                    case ImportStage.Completed:
+                        UpdateStatus(progress.Stage, "导入完成");
+                        ToggleBusy(false, false);
+                        break;
+                }
+            }));
         }
     }
 }

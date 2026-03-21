@@ -89,5 +89,46 @@ namespace XlsToAccessImporter
                 }
             }
         }
+
+        public void InsertBatch(string accessConnectionString, string tableName, IList<ColumnDefinition> columns, IList<IList<object>> rows)
+        {
+            if (rows == null || rows.Count == 0)
+            {
+                return;
+            }
+
+            List<string> fieldNames = new List<string>();
+            List<string> placeholders = new List<string>();
+            for (int i = 0; i < columns.Count; i++)
+            {
+                fieldNames.Add(NameSanitizer.EscapeIdentifier(columns[i].FinalName));
+                placeholders.Add("?");
+            }
+
+            string sql = "INSERT INTO " + NameSanitizer.EscapeIdentifier(tableName) +
+                " (" + string.Join(", ", fieldNames.ToArray()) + ") VALUES (" + string.Join(", ", placeholders.ToArray()) + ")";
+
+            using (OleDbConnection connection = new OleDbConnection(accessConnectionString))
+            {
+                connection.Open();
+                using (OleDbTransaction transaction = connection.BeginTransaction())
+                using (OleDbCommand command = new OleDbCommand(sql, connection, transaction))
+                {
+                    for (int rowIndex = 0; rowIndex < rows.Count; rowIndex++)
+                    {
+                        command.Parameters.Clear();
+                        IList<object> row = rows[rowIndex];
+                        for (int i = 0; i < row.Count; i++)
+                        {
+                            command.Parameters.AddWithValue("@p" + i.ToString(CultureInfo.InvariantCulture), row[i] ?? DBNull.Value);
+                        }
+
+                        command.ExecuteNonQuery();
+                    }
+
+                    transaction.Commit();
+                }
+            }
+        }
     }
 }

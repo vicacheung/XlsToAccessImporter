@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Data;
+using System.Threading;
 
 namespace XlsToAccessImporter
 {
@@ -15,6 +16,7 @@ namespace XlsToAccessImporter
     {
         public string DisplayName { get; set; }
         public string QueryName { get; set; }
+        public string RangeQueryName { get; set; }
 
         public override string ToString()
         {
@@ -38,8 +40,9 @@ namespace XlsToAccessImporter
         public string SheetQueryName { get; set; }
         public string RequestedTableName { get; set; }
         public bool ForceAllText { get; set; }
+        public int BatchSize { get; set; }
         public List<ColumnDefinition> Columns { get; set; }
-        public DataTable SourceTable { get; set; }
+        public CancellationToken CancellationToken { get; set; }
     }
 
     internal sealed class ImportResult

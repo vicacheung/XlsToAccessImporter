@@ -2,17 +2,20 @@ using System;
 using System.Collections.Generic;
 using System.Data;
 using System.Globalization;
+using System.Threading;
 
 namespace XlsToAccessImporter
 {
     internal sealed class ImportService
     {
+        private readonly ExcelReader _excelReader;
         private readonly SchemaInferenceService _schemaInferenceService;
         private readonly AccessService _accessService;
         private readonly Action<ImportProgress> _progressReporter;
 
-        public ImportService(SchemaInferenceService schemaInferenceService, AccessService accessService, Action<ImportProgress> progressReporter)
+        public ImportService(ExcelReader excelReader, SchemaInferenceService schemaInferenceService, AccessService accessService, Action<ImportProgress> progressReporter)
         {
+            _excelReader = excelReader;
             _schemaInferenceService = schemaInferenceService;
             _accessService = accessService;
             _progressReporter = progressReporter ?? delegate { };
@@ -20,7 +23,14 @@ namespace XlsToAccessImporter
 
         public ImportResult Execute(ImportOptions options)
         {
+            CancellationToken cancellationToken = options.CancellationToken;
             _progressReporter(new ImportProgress { Stage = ImportStage.Preparing, Message = "正在准备导入..." });
+            cancellationToken.ThrowIfCancellationRequested();
+
+            _progressReporter(new ImportProgress { Stage = ImportStage.ReadingExcel, Message = "正在统计 Excel 数据行数..." });
+            int totalRows = _excelReader.CountRows(options.ExcelPath, options.SheetQueryName);
+            cancellationToken.ThrowIfCancellationRequested();
+
             string accessConnectionString = OleDbUtility.BuildAccessConnectionString(options.AccessPath);
             string finalTableName = _accessService.GetUniqueTableName(accessConnectionString, options.RequestedTableName);
 
@@ -29,59 +39,83 @@ namespace XlsToAccessImporter
 
             ImportResult result = new ImportResult();
             result.FinalTableName = finalTableName;
-            int totalRows = options.SourceTable.Rows.Count;
 
-            for (int rowIndex = 0; rowIndex < options.SourceTable.Rows.Count; rowIndex++)
+            int processedRows = 0;
+            foreach (DataTable batch in _excelReader.ReadSheetInBatches(
+                options.ExcelPath,
+                options.SheetQueryName,
+                options.BatchSize,
+                delegate { return cancellationToken.IsCancellationRequested; },
+                delegate(int discoveredRows)
+                {
+                    _progressReporter(new ImportProgress
+                    {
+                        Stage = ImportStage.ReadingExcel,
+                        Message = "正在读取 Excel 数据... 已读取 " + discoveredRows + " 行",
+                        TotalRows = totalRows,
+                        ProcessedRows = processedRows,
+                        SuccessRows = result.InsertedRows,
+                        FailedRows = result.FailedRows
+                    });
+                }))
             {
-                DataRow row = options.SourceTable.Rows[rowIndex];
-                if (IsBlankRow(row))
+                cancellationToken.ThrowIfCancellationRequested();
+                List<IList<object>> rowsToInsert = new List<IList<object>>();
+                List<string> batchErrors = new List<string>();
+
+                for (int rowIndex = 0; rowIndex < batch.Rows.Count; rowIndex++)
                 {
-                    continue;
+                    DataRow row = batch.Rows[rowIndex];
+                    int excelRowNumber = processedRows + rowIndex + 2;
+                    if (IsBlankRow(row))
+                    {
+                        continue;
+                    }
+
+                    try
+                    {
+                        rowsToInsert.Add(ConvertRowValues(row, options.Columns, options.ForceAllText, excelRowNumber));
+                    }
+                    catch (Exception ex)
+                    {
+                        result.FailedRows++;
+                        batchErrors.Add("第 " + excelRowNumber.ToString(CultureInfo.InvariantCulture) + " 行失败: " + ex.Message);
+                    }
                 }
 
-                try
+                if (rowsToInsert.Count > 0)
                 {
-                    List<object> values = ConvertRowValues(row, options.Columns, options.ForceAllText, rowIndex + 2);
-                    _accessService.InsertRow(accessConnectionString, finalTableName, options.Columns, values);
-                    result.InsertedRows++;
-                }
-                catch (Exception ex)
-                {
-                    result.FailedRows++;
-                    result.Messages.Add("第 " + (rowIndex + 2).ToString(CultureInfo.InvariantCulture) + " 行失败: " + ex.Message);
+                    _accessService.InsertBatch(accessConnectionString, finalTableName, options.Columns, rowsToInsert);
+                    result.InsertedRows += rowsToInsert.Count;
                 }
 
-                ReportRowProgress(rowIndex + 1, totalRows, result.InsertedRows, result.FailedRows);
+                if (batchErrors.Count > 0)
+                {
+                    result.Messages.AddRange(batchErrors);
+                }
+
+                processedRows += batch.Rows.Count;
+                _progressReporter(new ImportProgress
+                {
+                    Stage = ImportStage.ImportingData,
+                    ProcessedRows = processedRows,
+                    TotalRows = totalRows,
+                    SuccessRows = result.InsertedRows,
+                    FailedRows = result.FailedRows
+                });
             }
 
             _progressReporter(new ImportProgress
             {
                 Stage = ImportStage.Completed,
                 TotalRows = totalRows,
-                ProcessedRows = result.InsertedRows + result.FailedRows,
+                ProcessedRows = processedRows,
                 SuccessRows = result.InsertedRows,
                 FailedRows = result.FailedRows,
                 Message = "导入完成"
             });
 
             return result;
-        }
-
-        private void ReportRowProgress(int processed, int total, int success, int failed)
-        {
-            if (processed % 25 != 0 && processed != total)
-            {
-                return;
-            }
-
-            _progressReporter(new ImportProgress
-            {
-                Stage = ImportStage.ImportingData,
-                ProcessedRows = processed,
-                TotalRows = total,
-                SuccessRows = success,
-                FailedRows = failed
-            });
         }
 
         private List<object> ConvertRowValues(DataRow row, IList<ColumnDefinition> columns, bool forceAllText, int excelRowNumber)

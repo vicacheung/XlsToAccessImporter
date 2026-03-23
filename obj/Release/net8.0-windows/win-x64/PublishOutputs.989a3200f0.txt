@@ -1,0 +1,8 @@
+E:\DocsBox\HT_Docs\Ops\opencode\XlsToAccessImporter\bin\publish\XlsToAccessImporter.exe
+E:\DocsBox\HT_Docs\Ops\opencode\XlsToAccessImporter\bin\publish\XlsToAccessImporter.dll
+E:\DocsBox\HT_Docs\Ops\opencode\XlsToAccessImporter\bin\publish\XlsToAccessImporter.deps.json
+E:\DocsBox\HT_Docs\Ops\opencode\XlsToAccessImporter\bin\publish\XlsToAccessImporter.runtimeconfig.json
+E:\DocsBox\HT_Docs\Ops\opencode\XlsToAccessImporter\bin\publish\XlsToAccessImporter.pdb
+E:\DocsBox\HT_Docs\Ops\opencode\XlsToAccessImporter\bin\publish\ExcelDataReader.dll
+E:\DocsBox\HT_Docs\Ops\opencode\XlsToAccessImporter\bin\publish\ExcelDataReader.DataSet.dll
+E:\DocsBox\HT_Docs\Ops\opencode\XlsToAccessImporter\bin\publish\System.Data.OleDb.dll

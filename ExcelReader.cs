@@ -1,41 +1,44 @@
 using System;
 using System.Collections.Generic;
 using System.Data;
-using System.Data.OleDb;
 using System.Globalization;
+using System.IO;
+using ExcelDataReader;
 
 namespace XlsToAccessImporter
 {
     internal sealed class ExcelReader
     {
+        static ExcelReader()
+        {
+            System.Text.Encoding.RegisterProvider(System.Text.CodePagesEncodingProvider.Instance);
+        }
+
         public List<ExcelSheetInfo> GetSheets(string excelPath)
         {
             List<ExcelSheetInfo> sheets = new List<ExcelSheetInfo>();
-            string connectionString = OleDbUtility.BuildExcelConnectionString(excelPath, true);
-            using (OleDbConnection connection = new OleDbConnection(connectionString))
+            using (FileStream stream = File.Open(excelPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+            using (IExcelDataReader reader = CreateReader(stream, excelPath))
             {
-                connection.Open();
-                DataTable schemaTable = connection.GetOleDbSchemaTable(OleDbSchemaGuid.Tables, null);
-                if (schemaTable == null)
+                DataSet dataSet = reader.AsDataSet(new ExcelDataSetConfiguration
                 {
-                    return sheets;
-                }
-
-                foreach (DataRow row in schemaTable.Rows)
-                {
-                    object tableNameValue = row["TABLE_NAME"];
-                    string tableName = tableNameValue == null ? string.Empty : tableNameValue.ToString();
-                    if (!IsWorksheetName(tableName))
+                    ConfigureDataTable = delegate
                     {
-                        continue;
+                        return new ExcelDataTableConfiguration
+                        {
+                            UseHeaderRow = true
+                        };
                     }
+                });
 
-                    string normalized = NormalizeQueryName(tableName);
+                for (int i = 0; i < dataSet.Tables.Count; i++)
+                {
+                    DataTable table = dataSet.Tables[i];
                     sheets.Add(new ExcelSheetInfo
                     {
-                        DisplayName = normalized.Substring(0, normalized.Length - 1),
-                        QueryName = normalized,
-                        RangeQueryName = NameSanitizer.EscapeIdentifier(normalized)
+                        DisplayName = table.TableName,
+                        QueryName = table.TableName,
+                        RangeQueryName = table.TableName
                     });
                 }
             }
@@ -45,135 +48,167 @@ namespace XlsToAccessImporter
 
         public DataTable ReadSheetPreview(string excelPath, string queryName, int maxRows)
         {
-            string connectionString = OleDbUtility.BuildExcelConnectionString(excelPath, true);
-            using (OleDbConnection connection = new OleDbConnection(connectionString))
+            using (FileStream stream = File.Open(excelPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+            using (IExcelDataReader reader = CreateReader(stream, excelPath))
             {
-                connection.Open();
-                using (OleDbCommand command = new OleDbCommand(BuildSelectSql(queryName), connection))
-                using (OleDbDataReader reader = command.ExecuteReader())
+                MoveToSheet(reader, queryName);
+
+                DataTable table = null;
+                int rowCount = 0;
+                bool headerConsumed = false;
+                while (reader.Read())
                 {
-                    DataTable table = new DataTable();
-                    if (reader == null)
+                    if (!headerConsumed)
                     {
-                        return table;
+                        table = CreateTableFromHeader(reader);
+                        headerConsumed = true;
+                        continue;
                     }
 
-                    for (int i = 0; i < reader.FieldCount; i++)
+                    if (table == null)
                     {
-                        table.Columns.Add(reader.GetName(i));
+                        continue;
                     }
 
-                    int rowCount = 0;
-                    while (reader.Read() && rowCount < maxRows)
+                    DataRow row = table.NewRow();
+                    for (int i = 0; i < table.Columns.Count; i++)
                     {
-                        DataRow row = table.NewRow();
-                        for (int i = 0; i < reader.FieldCount; i++)
-                        {
-                            row[i] = reader.IsDBNull(i) ? DBNull.Value : reader.GetValue(i);
-                        }
-
-                        table.Rows.Add(row);
-                        rowCount++;
+                        row[i] = reader.GetValue(i) ?? DBNull.Value;
                     }
 
-                    return table;
+                    table.Rows.Add(row);
+                    rowCount++;
+                    if (rowCount >= maxRows)
+                    {
+                        break;
+                    }
                 }
+
+                return table ?? new DataTable(queryName);
             }
         }
 
-        public IEnumerable<DataTable> ReadSheetInBatches(string excelPath, string queryName, int batchSize, Func<bool> shouldCancel, Action<int> onTotalDiscovered)
+        public IEnumerable<DataTable> ReadSheetInBatches(string excelPath, string queryName, int batchSize, Func<bool> shouldCancel, Action<int> onRowsRead)
         {
-            string connectionString = OleDbUtility.BuildExcelConnectionString(excelPath, true);
-            using (OleDbConnection connection = new OleDbConnection(connectionString))
+            using (FileStream stream = File.Open(excelPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+            using (IExcelDataReader reader = CreateReader(stream, excelPath))
             {
-                connection.Open();
-                using (OleDbCommand command = new OleDbCommand(BuildSelectSql(queryName), connection))
-                using (OleDbDataReader reader = command.ExecuteReader())
+                MoveToSheet(reader, queryName);
+
+                DataTable currentBatch = null;
+                int totalRead = 0;
+                bool headerConsumed = false;
+                while (reader.Read())
                 {
-                    if (reader == null)
+                    if (shouldCancel())
                     {
                         yield break;
                     }
 
-                    DataTable batch = CreateBatchTable(reader);
-                    int totalRows = 0;
-                    while (reader.Read())
+                    if (!headerConsumed)
                     {
-                        if (shouldCancel())
-                        {
-                            yield break;
-                        }
-
-                        DataRow row = batch.NewRow();
-                        for (int i = 0; i < reader.FieldCount; i++)
-                        {
-                            row[i] = reader.IsDBNull(i) ? DBNull.Value : reader.GetValue(i);
-                        }
-
-                        batch.Rows.Add(row);
-                        totalRows++;
-
-                        if (batch.Rows.Count >= batchSize)
-                        {
-                            onTotalDiscovered(totalRows);
-                            yield return batch;
-                            batch = CreateBatchTable(reader);
-                        }
+                        currentBatch = CreateTableFromHeader(reader);
+                        headerConsumed = true;
+                        continue;
                     }
 
-                    if (batch.Rows.Count > 0)
+                    if (currentBatch == null)
                     {
-                        onTotalDiscovered(totalRows);
-                        yield return batch;
+                        continue;
                     }
+
+                    DataRow row = currentBatch.NewRow();
+                    for (int i = 0; i < currentBatch.Columns.Count; i++)
+                    {
+                        row[i] = reader.GetValue(i) ?? DBNull.Value;
+                    }
+
+                    currentBatch.Rows.Add(row);
+                    totalRead++;
+
+                    if (currentBatch.Rows.Count >= batchSize)
+                    {
+                        onRowsRead(totalRead);
+                        yield return currentBatch;
+                        currentBatch = CloneStructure(currentBatch);
+                    }
+                }
+
+                if (currentBatch != null && currentBatch.Rows.Count > 0)
+                {
+                    onRowsRead(totalRead);
+                    yield return currentBatch;
                 }
             }
         }
 
         public int CountRows(string excelPath, string queryName)
         {
-            string connectionString = OleDbUtility.BuildExcelConnectionString(excelPath, true);
-            using (OleDbConnection connection = new OleDbConnection(connectionString))
+            using (FileStream stream = File.Open(excelPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+            using (IExcelDataReader reader = CreateReader(stream, excelPath))
             {
-                connection.Open();
-                using (OleDbCommand command = new OleDbCommand("SELECT COUNT(*) FROM " + NameSanitizer.EscapeIdentifier(queryName), connection))
+                MoveToSheet(reader, queryName);
+                int count = -1;
+                while (reader.Read())
                 {
-                    object count = command.ExecuteScalar();
-                    return count == null || count == DBNull.Value ? 0 : Convert.ToInt32(count, CultureInfo.InvariantCulture);
+                    count++;
+                }
+
+                return Math.Max(0, count);
+            }
+        }
+
+        private static IExcelDataReader CreateReader(Stream stream, string excelPath)
+        {
+            string extension = Path.GetExtension(excelPath) ?? string.Empty;
+            if (extension.Equals(".xls", StringComparison.OrdinalIgnoreCase))
+            {
+                return ExcelReaderFactory.CreateBinaryReader(stream);
+            }
+
+            return ExcelReaderFactory.CreateOpenXmlReader(stream);
+        }
+
+        private static void MoveToSheet(IExcelDataReader reader, string queryName)
+        {
+            do
+            {
+                if (string.Equals(reader.Name, queryName, StringComparison.OrdinalIgnoreCase))
+                {
+                    return;
                 }
             }
+            while (reader.NextResult());
+
+            throw new InvalidOperationException("未找到工作表: " + queryName);
         }
 
-        private static bool IsWorksheetName(string tableName)
+        private static DataTable CreateTableFromHeader(IExcelDataReader reader)
         {
-            return tableName.EndsWith("$", StringComparison.OrdinalIgnoreCase) || tableName.EndsWith("$'", StringComparison.OrdinalIgnoreCase);
-        }
-
-        private static string NormalizeQueryName(string tableName)
-        {
-            string normalized = tableName.Trim('\'');
-            if (!normalized.EndsWith("$", StringComparison.OrdinalIgnoreCase))
-            {
-                normalized += "$";
-            }
-
-            return normalized;
-        }
-
-        private static DataTable CreateBatchTable(IDataRecord reader)
-        {
-            DataTable table = new DataTable();
+            DataTable table = new DataTable(reader.Name);
             for (int i = 0; i < reader.FieldCount; i++)
             {
-                table.Columns.Add(reader.GetName(i));
+                string columnName = Convert.ToString(reader.GetValue(i), CultureInfo.CurrentCulture);
+                if (string.IsNullOrWhiteSpace(columnName))
+                {
+                    columnName = "F" + (i + 1).ToString(CultureInfo.InvariantCulture);
+                }
+
+                table.Columns.Add(columnName);
             }
 
             return table;
         }
 
-        private static string BuildSelectSql(string queryName)
+        private static DataTable CloneStructure(DataTable source)
         {
-            return "SELECT * FROM " + NameSanitizer.EscapeIdentifier(queryName);
+            DataTable table = new DataTable(source.TableName);
+            for (int i = 0; i < source.Columns.Count; i++)
+            {
+                table.Columns.Add(source.Columns[i].ColumnName);
+            }
+
+            return table;
         }
     }
 }
